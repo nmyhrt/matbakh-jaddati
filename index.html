@@ -1018,6 +1018,10 @@ function buildGrandma() {
   const tw = bx(0.12, 0.16, 0.01, std({ color: 0xffffff, map: canvasTex(64, 96, (c) => { c.fillStyle = '#f7f2ea'; c.fillRect(0, 0, 64, 96); c.fillStyle = '#c0392b'; for (let i = 0; i < 96; i += 16) c.fillRect(0, i, 64, 5); for (let i = 0; i < 64; i += 16) c.fillRect(i, 0, 5, 96); }) }), 0.14, 1.02, 0.02, g); tw.rotation.set(0.3, 0, -0.6);
   g.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
   grandma = { g, head, mouth, talkT: 0 };
+  const cane = new THREE.Group(); cane.position.set(2.42, 0, 1.12); cane.rotation.set(0.12, 0, -0.16); scene.add(cane);
+  const caneM = std({ color: 0x5a3a22, roughness: 0.45 });
+  cyl(0.011, 0.013, 0.86, caneM, 0, 0.43, 0, cane, 10);
+  const ch = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.012, 8, 16, Math.PI), caneM); ch.position.set(0.05, 0.86, 0); ch.castShadow = true; cane.add(ch);
   ANCH.grandma = anchorAt(g, 0, 1.0, 0.1);
   ANCH.grandmaAcc = anchorAt(scene, 2.15, 0, 0.82);
   addInter({ name: 'الجدة', range: 0.95, center: (v) => ANCH.grandma.getWorldPosition(v), access: (v) => ANCH.grandmaAcc.getWorldPosition(v),
@@ -1100,7 +1104,7 @@ function updateSteam(dt) {
 /* ---------- character ---------- */
 const player = { pos: new THREE.Vector3(-1.2, 0, 1.0), yaw: Math.PI, targetYaw: Math.PI, speed: 0, busy: 0, model: null, faceTo: null };
 let mixer = null; const actions = {}; let baseName = 'idle', shot = null, shotEnd = 0, clock = 0;
-const ANIMS = [['idle', 'idle'], ['walk', 'walk'], ['open', 'open'], ['pick', 'pick'], ['type', 'type'], ['drink', 'drink'], ['happy', 'happy'], ['victory', 'victory'], ['sad', 'sad'], ['pout', 'pout'], ['react', 'react'], ['surprised', 'surprised'], ['talk', 'talk']];
+const ANIMS = [['idle', 'idle'], ['walk', 'walking'], ['open', 'open'], ['pick', 'pick'], ['type', 'type'], ['drink', 'drink'], ['happy', 'happy'], ['victory', 'victory'], ['sad', 'sad'], ['pout', 'pout'], ['react', 'react'], ['surprised', 'surprised'], ['talk', 'talk']];
 function fixClip(clip) {
   clip.tracks.forEach((t) => {
     if (/Hips\.position$/.test(t.name)) { const v = t.values; const x0 = v[0], z0 = v[2]; for (let i = 0; i < v.length; i += 3) { v[i] = x0; v[i + 2] = z0; } }
@@ -1130,13 +1134,84 @@ async function loadCharacter(progress) {
     try {
       const a = await loader.loadAsync('m/' + file + '.fbx');
       let clip = fixClip(a.animations[0]);
-      if (name === 'walk') { const fr = Math.round(clip.duration * 30); clip = THREE.AnimationUtils.subclip(clip, 'walkLoop', Math.round(fr * 0.42), fr, 30); }
       actions[name] = mixer.clipAction(clip);
     } catch (e) { console.warn('anim', name, e); }
     tick();
   }));
   if (actions.idle) { actions.idle.play(); }
   player.model = wrap;
+}
+/* ---------- grandma model ---------- */
+const GM_ANIMS = [['idle', 'gm_idle'], ['talk', 'gm_talk'], ['clap', 'gm_clap'], ['angry', 'gm_angry']];
+let gmMixer = null, gmHead = null, gmLook = 0, gmState = '', gmShotEnd = 0; const gmActs = {};
+function makeGlasses(len) {
+  const g = new THREE.Group();
+  const frame = std({ color: 0xc9a24a, metalness: 1, roughness: 0.25 });
+  const lensM = std({ color: 0xdfeff5, transparent: true, opacity: 0.18, roughness: 0.02, metalness: 0.1, depthWrite: false });
+  const r = len * 0.13, sp = len * 0.17, tube = Math.max(0.002, len * 0.012);
+  [-1, 1].forEach((s) => {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(r, tube, 8, 28), frame); ring.position.x = s * sp; g.add(ring);
+    const lens = new THREE.Mesh(new THREE.CircleGeometry(r, 24), lensM); lens.position.x = s * sp; g.add(lens);
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(tube, tube, len * 0.55, 6), frame); arm.rotation.x = Math.PI / 2; arm.position.set(s * (sp + r), 0, -len * 0.27); g.add(arm);
+  });
+  const bridge = new THREE.Mesh(new THREE.TorusGeometry(sp - r, tube, 6, 12, Math.PI), frame); bridge.position.y = r * 0.2; g.add(bridge);
+  return g;
+}
+async function loadGrandma() {
+  const loader = new FBXLoader();
+  const model = await loader.loadAsync('m/grandma.fbx');
+  model.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; o.material = Array.isArray(o.material) ? o.material.map(convertMaterial) : convertMaterial(o.material); } });
+  const box = new THREE.Box3().setFromObject(model); let h = box.max.y - box.min.y; if (!isFinite(h) || h <= 0) h = 170;
+  model.scale.multiplyScalar(1.55 / h);
+  const clips = {};
+  await Promise.all(GM_ANIMS.map(async ([n, f]) => { try { const a = await loader.loadAsync('m/' + f + '.fbx'); clips[n] = a.animations[0]; } catch (e) { console.warn('grandma anim', n, e); } }));
+  if (!clips.idle) throw new Error('no sitting idle');
+  grandma.g.children.forEach((c) => { c.visible = false; });
+  grandma.g.add(model);
+  gmMixer = new THREE.AnimationMixer(model);
+  const hipsTrack = (c) => c.tracks.find((t) => /Hips\.position$/.test(t.name));
+  const it = hipsTrack(clips.idle); const rx = it ? it.values[0] : 0, rz = it ? it.values[2] : 0;
+  for (const n in clips) { const t = hipsTrack(clips[n]); if (t) { const v = t.values; for (let i = 0; i < v.length; i += 3) { v[i] = rx; v[i + 2] = rz; } } gmActs[n] = gmMixer.clipAction(clips[n]); }
+  gmActs.idle.play(); gmState = 'idle';
+  gmMixer.update(0.01); model.updateMatrixWorld(true);
+  let hips = null, top = null;
+  model.traverse((o) => { if (o.isBone) { if (/Hips$/.test(o.name)) hips = o; else if (/Head$/.test(o.name)) gmHead = o; else if (/HeadTop_End$/.test(o.name)) top = o; } });
+  if (hips) {
+    const want = grandma.g.worldToLocal(new THREE.Vector3(2.7, 0.6, 1.55));
+    const have = grandma.g.worldToLocal(hips.getWorldPosition(new THREE.Vector3()));
+    model.position.add(want.sub(have)); model.updateMatrixWorld(true);
+  }
+  if (gmHead && top) {
+    const H = gmHead.getWorldPosition(new THREE.Vector3()), T = top.getWorldPosition(new THREE.Vector3());
+    const len = H.distanceTo(T) || 0.2; const gq = grandma.g.getWorldQuaternion(new THREE.Quaternion());
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(gq), up = T.clone().sub(H).normalize();
+    const gl = makeGlasses(len);
+    gl.position.copy(H).addScaledVector(up, len * 0.4).addScaledVector(fwd, len * 0.62);
+    gl.quaternion.copy(gq); scene.add(gl); gmHead.attach(gl);
+  }
+}
+function gmPlay(n, dur = 0) {
+  const a = gmActs[n]; if (!a) return;
+  if (!dur && gmState === n) return;
+  const cur = gmActs[gmState];
+  a.reset(); a.setLoop(dur ? THREE.LoopOnce : THREE.LoopRepeat, Infinity); a.clampWhenFinished = true; a.setEffectiveWeight(1); a.fadeIn(0.35).play();
+  if (cur && cur !== a) cur.fadeOut(0.35);
+  gmState = n; gmShotEnd = dur ? clock + dur : 0;
+}
+function updateGrandma(dt) {
+  if (grandma.talkT > 0) grandma.talkT -= dt;
+  const gp = grandma.g.position;
+  const look = angDiff(0, Math.atan2(player.pos.x - gp.x, player.pos.z - gp.z) - grandma.g.rotation.y);
+  gmLook = damp(gmLook, clamp(look, -0.9, 0.9), 3, dt);
+  if (gmMixer) {
+    if (gmShotEnd && clock > gmShotEnd) { gmShotEnd = 0; gmPlay(grandma.talkT > 0 && gmActs.talk ? 'talk' : 'idle'); }
+    else if (!gmShotEnd) gmPlay(grandma.talkT > 0 && gmActs.talk ? 'talk' : 'idle');
+    gmMixer.update(dt);
+    if (gmHead) gmHead.rotateY(gmLook * 0.75);
+    return;
+  }
+  grandma.head.rotation.y = gmLook;
+  if (grandma.talkT > 0) { grandma.head.rotation.x = Math.sin(clock * 9) * 0.05; grandma.mouth.scale.y = 1 + Math.abs(Math.sin(clock * 14)) * 1.2; } else { grandma.mouth.scale.y = 1; grandma.head.rotation.x = 0; }
 }
 function fallbackCharacter() {
   const g = new THREE.Group();
@@ -1246,9 +1321,10 @@ let lastAction = 0;
 let bubbleTimer = 0, toastTimer = 0; const sayQ = [];
 function say(text, moodDelta = 0, dur = 3.8) {
   if (moodDelta) setMood(G.mood + moodDelta);
+  if (moodDelta <= -8) gmPlay('angry', 2.6);
   sayQ.push({ text, dur }); if (bubbleTimer <= 0) nextSay();
 }
-function nextSay() { const s = sayQ.shift(); if (!s) { $('bubble').classList.add('off'); return; } $('bubble').textContent = s.text; $('bubble').classList.remove('off'); bubbleTimer = s.dur; grandma.talkT = Math.min(s.dur, 2.5); }
+function nextSay() { const s = sayQ.shift(); if (!s) { $('bubble').classList.add('off'); return; } $('bubble').textContent = s.text; $('bubble').classList.remove('off'); bubbleTimer = s.dur; grandma.talkT = s.dur - 0.4; }
 function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('on'); toastTimer = 2.2; }
 function setMood(v) {
   G.mood = clamp(v, 0, 100); const i = $('mood').firstElementChild; i.style.width = G.mood + '%'; i.style.background = G.mood > 60 ? 'var(--gold)' : G.mood > 30 ? '#e8a060' : 'var(--bad)';
@@ -1404,6 +1480,7 @@ function serve() {
   $('rQuote').textContent = n === 3 ? 'والله إنك بنت جدتك! أحلى شاي ذقته من زمان' : n === 2 ? 'زين يا بنيتي، بس فيه شي ناقص… المرة الجاية أحسن' : n === 1 ? 'يعني… يمشي الحال. تعلّمي وارجعي' : 'وش هذا يا بنت؟! خليني أسويه بنفسي';
   oneShot(n >= 2 ? 'victory' : 'sad', { dur: 3.4, ts: 1, lock: true });
   setMood(G.mood + (n - 1.5) * 15);
+  gmPlay(n >= 2 ? 'clap' : 'angry', n >= 2 ? 3.4 : 2.6);
   setTimeout(() => { $('result').hidden = false; }, 1400);
 }
 $('again').addEventListener('click', () => location.reload());
@@ -1451,10 +1528,6 @@ function updateGame(dt) {
   const fwd = tmpV2.set(Math.sin(player.yaw), 0, Math.cos(player.yaw));
   if (G.carrying === 'kettle') { kettle.mesh.position.set(player.pos.x + fwd.x * 0.32, 0.92, player.pos.z + fwd.z * 0.32); kettle.mesh.rotation.y = player.yaw - Math.PI / 2; }
   if (G.carrying === 'tea') { teaCup.position.set(player.pos.x + fwd.x * 0.3, 1.0, player.pos.z + fwd.z * 0.3); }
-  // grandma looks at the girl
-  const gp = grandma.g.position; const look = Math.atan2(player.pos.x - gp.x, player.pos.z - gp.z) - grandma.g.rotation.y;
-  grandma.head.rotation.y = damp(grandma.head.rotation.y, clamp(angDiff(0, look), -1.1, 1.1), 3, dt);
-  if (grandma.talkT > 0) { grandma.talkT -= dt; grandma.head.rotation.x = Math.sin(clock * 9) * 0.05; grandma.mouth.scale.y = 1 + Math.abs(Math.sin(clock * 14)) * 1.2; } else { grandma.mouth.scale.y = 1; grandma.head.rotation.x = 0; }
 }
 
 /* ---------- player movement ---------- */
@@ -1545,7 +1618,7 @@ function updateTarget() {
 let last = performance.now();
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now; clock += dt;
-  updatePlayer(dt); updateOpenables(dt); updateGame(dt); updateAnim(dt); updateCamera(dt); updateSteam(dt); updateTarget(); updateHud(dt);
+  updatePlayer(dt); updateOpenables(dt); updateGame(dt); updateAnim(dt); updateGrandma(dt); updateCamera(dt); updateSteam(dt); updateTarget(); updateHud(dt);
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
@@ -1561,6 +1634,8 @@ async function boot() {
   requestAnimationFrame(frame);
   try {
     await loadCharacter((p) => { bar.style.width = (15 + p * 85) + '%'; });
+    txt.textContent = 'نجهّز الجدة…';
+    try { await loadGrandma(); } catch (e) { console.warn('grandma', e); }
     txt.textContent = 'المطبخ جاهز';
   } catch (e) {
     console.error(e); fallbackCharacter(); txt.textContent = 'ما قدرنا نحمّل الشخصية، بتشوفين شكل مؤقت';
