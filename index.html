@@ -1105,12 +1105,21 @@ function updateSteam(dt) {
 const player = { pos: new THREE.Vector3(-1.2, 0, 1.0), yaw: Math.PI, targetYaw: Math.PI, speed: 0, busy: 0, model: null, faceTo: null };
 let mixer = null; const actions = {}; let baseName = 'idle', shot = null, shotEnd = 0, clock = 0;
 const ANIMS = [['idle', 'idle'], ['walk', 'walking'], ['open', 'open'], ['pick', 'pick'], ['type', 'type'], ['drink', 'drink'], ['happy', 'happy'], ['victory', 'victory'], ['sad', 'sad'], ['pout', 'pout'], ['react', 'react'], ['surprised', 'surprised'], ['talk', 'talk']];
-function fixClip(clip) {
+/* Retarget a Mixamo clip onto the loaded skeleton: match the bone-name prefix
+   (mixamorig vs mixamorig1 when a clip was downloaded for another character),
+   keep the hips in place, and rebase the hip height on the model's own idle. */
+function fixClip(clip, prefix, ref) {
   clip.tracks.forEach((t) => {
-    if (/Hips\.position$/.test(t.name)) { const v = t.values; const x0 = v[0], z0 = v[2]; for (let i = 0; i < v.length; i += 3) { v[i] = x0; v[i + 2] = z0; } }
+    if (prefix) t.name = t.name.replace(/^mixamorig\d*/, prefix);
+    if (/Hips\.position$/.test(t.name)) {
+      const v = t.values; const x0 = ref ? ref.x : v[0], z0 = ref ? ref.z : v[2], dy = ref ? ref.y - v[1] : 0;
+      for (let i = 0; i < v.length; i += 3) { v[i] = x0; v[i + 1] += dy; v[i + 2] = z0; }
+    }
   });
   return clip;
 }
+function bonePrefix(model) { let pre = null; model.traverse((o) => { if (!pre && o.isBone && /Hips$/.test(o.name)) pre = o.name.replace(/Hips$/, ''); }); return pre; }
+function hipsRef(clip) { const t = clip.tracks.find((k) => /Hips\.position$/.test(k.name)); return t ? { x: t.values[0], y: t.values[1], z: t.values[2] } : null; }
 function convertMaterial(m) {
   const isHair = /hair/i.test(m.name || '');
   const n = new THREE.MeshStandardMaterial({ name: m.name, map: m.map || null, normalMap: m.normalMap || null, color: m.map ? 0xffffff : (m.color || new THREE.Color(0xcccccc)), roughness: isHair ? 0.55 : 0.72, metalness: 0 });
@@ -1130,14 +1139,19 @@ async function loadCharacter(progress) {
   model.scale.multiplyScalar(1.66 / h);
   const wrap = new THREE.Group(); wrap.add(model); scene.add(wrap);
   mixer = new THREE.AnimationMixer(model);
-  await Promise.all(ANIMS.map(async ([name, file]) => {
+  const prefix = bonePrefix(model);
+  let ref = null;
+  const loadAnim = async ([name, file]) => {
     try {
       const a = await loader.loadAsync('m/' + file + '.fbx');
-      let clip = fixClip(a.animations[0]);
+      const clip = fixClip(a.animations[0], prefix, ref);
+      if (name === 'idle') ref = hipsRef(clip);
       actions[name] = mixer.clipAction(clip);
     } catch (e) { console.warn('anim', name, e); }
     tick();
-  }));
+  };
+  await loadAnim(ANIMS[0]);
+  await Promise.all(ANIMS.slice(1).map(loadAnim));
   if (actions.idle) { actions.idle.play(); }
   player.model = wrap;
 }
@@ -1169,6 +1183,7 @@ async function loadGrandma() {
   grandma.g.children.forEach((c) => { c.visible = false; });
   grandma.g.add(model);
   gmMixer = new THREE.AnimationMixer(model);
+  const gpre = bonePrefix(model); if (gpre) for (const n in clips) clips[n].tracks.forEach((t) => { t.name = t.name.replace(/^mixamorig\d*/, gpre); });
   const hipsTrack = (c) => c.tracks.find((t) => /Hips\.position$/.test(t.name));
   const it = hipsTrack(clips.idle); const rx = it ? it.values[0] : 0, rz = it ? it.values[2] : 0;
   for (const n in clips) { const t = hipsTrack(clips[n]); if (t) { const v = t.values; for (let i = 0; i < v.length; i += 3) { v[i] = rx; v[i + 2] = rz; } } gmActs[n] = gmMixer.clipAction(clips[n]); }
